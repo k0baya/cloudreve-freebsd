@@ -1,0 +1,77 @@
+name: Build 
+
+on: workflow_dispatch
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Build
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: latest
+
+    - name: Build Frontend
+      run: |
+        npm install -g yarn
+        git clone https://github.com/cloudreve/frontend
+        cd frontend
+        yarn install
+        CI=false yarn build
+        cd build
+        find . -name "*.map" -type f -delete
+        cd ../.. && zip -r - frontend/build >assets.zip
+
+    - name: Build binaries
+      uses: vmactions/freebsd-vm@v1
+      with:
+        usesh: true
+        release: 13.2
+        prepare: |
+          pkg install -y wget curl git gcc bash gawk gsed
+          wget https://dl.google.com/go/go1.22.0.freebsd-amd64.tar.gz && tar -C /usr/local -xzf go1.22.0.freebsd-amd64.tar.gz && rm go1.22.0.freebsd-amd64.tar.gz
+          ln -s /usr/local/go/bin/go /usr/local/bin/go
+        run: |
+          export LATEST_APP=$(wget -qO- https://api.github.com/repos/cloudreve/Cloudreve/tags | gawk -F '["v]' '/name/{print $4;exit}')
+          git clone -b $LATEST_APP --recurse-submodules https://github.com/cloudreve/Cloudreve
+          cd Cloudreve
+          rm -rf assets && mv -f ../frontend ./assets && cp ../assets.zip ./assets.zip
+          export ldflags="\
+          -X 'github.com/cloudreve/Cloudreve/v3/pkg/conf.BackendVersion={{.Tag}}' \
+          -X 'github.com/cloudreve/Cloudreve/v3/pkg/conf.LastCommit={{.ShortCommit}}' \
+          "
+          go mod tidy
+          GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="$ldflags" -o cloudreve && cp cloudreve ../cloudreve
+          cd .. && mkdir -p target && mv -f Cloudreve/assets/build target/statics && mv -f cloudreve target/cloudreve && cd target && tar -czvf ../cloudreve-freebsd-amd64.tar.gz *
+          cd ..
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@main
+      with:
+        name: cloudreve-freebsd-amd64
+        path: |
+            cloudreve-freebsd-amd64.tar.gz
+
+    - name: Generate release tag
+      id: tag
+      run: echo "release_tag=$(wget -qO- https://api.github.com/repos/cloudreve/Cloudreve/tags | gawk -F '["v]' '/name/{print $4;exit}')" >> $GITHUB_OUTPUT
+
+    - name: Create release
+      uses: softprops/action-gh-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        files: |
+              cloudreve-freebsd-amd64.tar.gz
+   
+    - name: Delete workflow runs
+      uses: Mattraks/delete-workflow-runs@v2
+      with:
+        token: ${{ github.token }}
+        repository: ${{ github.repository }}
+        retain_days: 1
+        keep_minimum_runs: 8
