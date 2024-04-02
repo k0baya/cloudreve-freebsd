@@ -1,0 +1,43 @@
+name: Check Updates
+
+on:
+  schedule:
+    - cron: '0 16 */1 * *'
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: compare versions
+        run: |
+          export REMOTEVERSION=$(wget -qO- https://api.github.com/repos/cloudreve/Cloudreve/tags | gawk -F '["v]' '/name/{print $4;exit}')
+          export LOCALVERSION=$(wget -qO- https://api.github.com/repos/k0baya/cloudreve-freebsd/tags | gawk -F '["v]' '/name/{print $4;exit}')
+          if [[ "$LOCALVERSION" == "$REMOTEVERSION" ]]; then
+              echo "SYNCED=1" >> $GITHUB_ENV
+          else
+              echo "SYNCED=0" >> $GITHUB_ENV
+          fi
+          
+      - name: Trigger release
+        if: ${{ env.SYNCED == 0 }}
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.PAT_TOKEN }}
+          script: |
+              await github.rest.actions.createWorkflowDispatch({
+              owner: 'k0baya',
+              repo: 'cloudreve-freebsd',
+              workflow_id: 'build.yml',
+              ref: 'main'
+              })
+              
+      - name: Delete workflow runs
+        if: ${{ env.SYNCED == 1 }}
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 1
+          keep_minimum_runs: 8
